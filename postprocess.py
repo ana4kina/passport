@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Постобработка OCR паспорта РФ.
 
-Использование:
-    python postprocess.py data/test_predictions.jsonl answers.jsonl
-"""
 from __future__ import annotations
 
 import csv
@@ -30,7 +26,6 @@ FIELDS = [
 
 AS_OF = date(2026, 10, 1)
 
-# GOST 52535.1-2006 / ICAO transliteration used in Russian passport MRZ.
 CYR_TO_LAT = {
     "А": "A", "Б": "B", "В": "V", "Г": "G", "Д": "D", "Е": "E", "Ё": "2",
     "Ж": "J", "З": "Z", "И": "I", "Й": "Q", "К": "K", "Л": "L", "М": "M",
@@ -50,7 +45,6 @@ ORG_START = (
     "ГОВД", "ГРОВД", "ОМ", "ПОМ", "ТПМ",
 )
 
-# Explicit OCR substitutions (safe: wrong token → unique correct token).
 TOKEN_FIX = {
     "РАЙОП": "РАЙОН",
     "РАЙОИ": "РАЙОН",
@@ -76,7 +70,6 @@ TOKEN_FIX = {
     "ТЬВЫ": "ТЫВЫ",
 }
 
-# Minimum character confidence by field (after MRZ cross-check for structured ones).
 MIN_CC = {
     "Birth_place_ru": 0.97,
     "Issue_organization_ru": 0.97,
@@ -91,7 +84,6 @@ VALID_RAION = {
     "Р-Н.", "Р-НА.", "Р-НЕ.",
 }
 
-# Quality floors. Weak photos are rejected even if OCR looks confident.
 MIN_SHARPNESS = 90.0
 MIN_DOC_PX = 700
 MAX_GLARE = 0.22
@@ -171,9 +163,7 @@ def apply_token_fix(text: str) -> str:
 def fix_birth_place(text: str) -> str:
     text = clean_cyr_text(text)
     text = apply_token_fix(text)
-    # Settlement prefixes must have a dot: "Г МОСКВА" → "Г. МОСКВА"
     text = re.sub(r"^(Г|С|Д|П|Х|ГОР|ДЕР|ПОС|ХУТ|СТАН)(\s+)", r"\1. ", text)
-    # Trailing abbreviations in birth place always have a period in labels.
     text = re.sub(r"\bОБЛ$", "ОБЛ.", text)
     text = re.sub(r"\bКР$", "КР.", text)
     text = re.sub(r"\bРЕСП$", "РЕСП.", text)
@@ -184,7 +174,6 @@ def fix_birth_place(text: str) -> str:
 def fix_org(text: str) -> str:
     text = clean_cyr_text(text)
     text = apply_token_fix(text)
-    # Glue after a period before a preposition: "ОБЛ.В" → "ОБЛ. В"
     text = re.sub(r"\.(В|ПО|НА|И)\b", r". \1", text)
     text = re.sub(r" +", " ", text).strip()
     return text
@@ -209,7 +198,6 @@ def age_years(birth: date, on: date) -> int:
 
 
 def passport_valid(birth: date, issue: date, as_of: date = AS_OF) -> bool:
-    """Паспорт РФ: замена в 20 и 45 лет, 90 дней после дня рождения."""
     if issue < birth or issue > as_of:
         return False
     if age_years(birth, issue) < 14:
@@ -233,7 +221,6 @@ def yymmdd_birth(s: str) -> str | None:
         date(year, mm, dd)
     except ValueError:
         return None
-    # Birth years in this dataset are 1951–2012.
     if year < 1945 or year > 2015:
         return None
     return f"{dd:02d}.{mm:02d}.{year}"
@@ -329,7 +316,6 @@ def names_agree(viz_last: str, viz_first: str, viz_mid: str, mrz: dict) -> bool:
     if t_first + t_mid != m_rest:
         return False
     if t_first:
-        # First name must be a prefix of the given-name MRZ parts.
         acc = ""
         found = False
         for p in mrz["gparts"]:
@@ -370,7 +356,6 @@ def looks_truncated_org(text: str, field: dict | None) -> bool:
         return True
     if field and box_h(field) >= 40 and n_lines(field) == 1:
         return True
-    # Tall box with only two lines: a third line was missed.
     if field and box_h(field) >= 75 and n_lines(field) == 2:
         return True
     tokens = text.split()
@@ -381,9 +366,7 @@ def looks_truncated_org(text: str, field: dict | None) -> bool:
         return True
     first = re.sub(r"[^А-ЯЁ0-9.-]", "", tokens[0])
     if first and first not in {s.rstrip(".") for s in ORG_START} and not first.isdigit():
-        # Allow names that start with a known prefix or a number ("1 ГОМ ...").
         if not any(text.startswith(p) for p in ORG_START):
-            # Still accept rare historical names (РОВД, ОВД already in list).
             if len(text) < 20:
                 return True
     return False
@@ -400,13 +383,8 @@ def load_subdivisions(path: Path) -> dict[str, list[str]]:
             if code and name:
                 out[code].append(name)
     return out
-
-
 class Engine:
     def __init__(self, root: Path):
-        # DaData names use different case/abbreviations than the stamp, so we
-        # only keep the set of known codes (not the wording). Missing codes are
-        # still allowed: ~1% of train stamps are absent from this dump.
         self.known_codes = set(load_subdivisions(root / "reference" / "subdivisions.csv"))
         if not self.known_codes:
             raise RuntimeError("empty subdivisions.csv")
@@ -440,7 +418,6 @@ class Engine:
         if not passport_valid(birth_d, issue_d):
             return rejected
 
-        # Cross-check structured viz vs MRZ when viz is present and confident.
         for fname, mval, parser in (
             ("Birth_date", birth, lambda s: s),
             ("Issue_date", issue, lambda s: s),
@@ -463,7 +440,6 @@ class Engine:
                 if vt_n and vt_n != norm_cmp(mval):
                     return rejected
 
-        # Names: viz must agree with MRZ transliteration.
         last_f, first_f, mid_f = viz.get("Last_name_ru"), viz.get("First_name_ru"), viz.get("Middle_name_ru")
         last = clean_cyr_text(viz_join(last_f) or "")
         first = clean_cyr_text(viz_join(first_f) or "")
@@ -478,12 +454,10 @@ class Engine:
             return rejected
         if not names_agree(last, first, mid, mrz):
             return rejected
-        # Names must be Cyrillic (hyphen/space allowed).
         for val in (last, first, mid):
             if val and not re.fullmatch(r"[А-ЯЁ]+(?:[ -][А-ЯЁ]+)*", val):
                 return rejected
 
-        # Licence: 10 digits, MRZ stores 9 = AA + year_tens + number.
         lic_f = viz.get("Licence_number")
         lic_raw = viz_join(lic_f) or ""
         digits = extract_digits(lic_raw)
@@ -496,12 +470,10 @@ class Engine:
         series_yy = int(digits[2:4])
         issue_yy = issue_d.year % 100
         delta = (series_yy - issue_yy) % 100
-        # Blank year is issue year or up to 3 years earlier (wrap 99→00).
         if delta not in {0, 97, 98, 99} and not (-3 <= series_yy - issue_yy <= 0):
             return rejected
         licence = f"{digits[0:2]} {digits[2:4]} {digits[4:10]}"
 
-        # Birth place — viz only.
         bp_f = viz.get("Birth_place_ru")
         bp = viz_join(bp_f)
         if not bp:
@@ -518,7 +490,6 @@ class Engine:
         if len(bp) < 5:
             return rejected
 
-        # Issuing authority — viz + optional gazetteer snap.
         org_f = viz.get("Issue_organization_ru")
         org = viz_join(org_f)
         if not org:
